@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: python-ml-engine
+    env: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11
