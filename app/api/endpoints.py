@@ -52,6 +52,8 @@ async def predict_assignment(request: PredictionRequest):
             "task_id": str(uuid.uuid4()),
             "task_features": request.task.model_dump(),
             "candidate_ids": candidate_ids,
+            # Add this line to satisfy the database constraint
+            "candidate_features": [c.model_dump() for c in eligible_candidates], 
             "recommended_action": scores[0]['id'] if scores else "NONE",
             "model_version": settings.MODEL_VERSION,
             "confidence_score": scores[0]['confidence'] if scores else 0.0
