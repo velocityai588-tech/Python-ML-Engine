@@ -49,6 +49,7 @@ async def predict_assignment(request: PredictionRequest):
         rec_id = str(uuid.uuid4())
         log_entry = {
             "id": rec_id,
+            "task_id": str(uuid.uuid4()),
             "task_features": request.task.model_dump(),
             "candidate_ids": candidate_ids,
             "recommended_action": scores[0]['id'] if scores else "NONE",

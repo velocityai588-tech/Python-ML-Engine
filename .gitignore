@@ -133,3 +133,4 @@ yarn-error.log*
 pyvenv.cfg
 Scripts
 .env
+**/__pycache__/**
