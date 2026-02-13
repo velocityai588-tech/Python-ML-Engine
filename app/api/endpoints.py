@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks
+from typing import List  # <--- ADDED THIS IMPORT
 from app.models.schemas import PredictionRequest, PredictionResponse, FeedbackRequest, BottleneckReport, AvailabilityReport
 from app.services.feature_builder import FeatureBuilder
 from app.services.rl_model import model_instance
@@ -62,7 +63,8 @@ async def predict_assignment(request: PredictionRequest):
                 {"employee_id": s["id"], "score": s["score"], "confidence": s["confidence"]} 
                 for s in scores
             ],
-            "bottleneck_warning": warning
+            "bottleneck_warning": warning,
+            "model_version": settings.MODEL_VERSION
         }
 
     except Exception as e:

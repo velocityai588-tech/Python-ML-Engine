@@ -4,10 +4,10 @@ from app.api.endpoints import router
 
 app = FastAPI(title="Velocity AI Engine", version="1.0")
 
-# Allow your TSX Frontend to talk to this API
+
 origins = [
     "http://localhost:3000",
-    "http://localhost:5173", # Vite default
+    "http://localhost:5173", 
     "https://your-production-url.com"
 ]
 
