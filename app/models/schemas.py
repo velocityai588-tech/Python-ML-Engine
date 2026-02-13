@@ -2,7 +2,15 @@ from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 
 # --- INPUTS ---
+from pydantic import BaseModel, ConfigDict
 
+class PredictionResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())  # Add this line
+    
+    recommendation_id: str
+    sorted_candidates: list
+    model_version: str  # This field name was causing the warning
+    
 class TaskFeatures(BaseModel):
     priority: str          # e.g., "High", "Medium", "Low"
     complexity: int        # 1-10
