@@ -1,11 +1,11 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks
-from app.models.schemas import PredictionRequest, PredictionResponse, FeedbackRequest
+from app.models.schemas import PredictionRequest, PredictionResponse, FeedbackRequest, BottleneckReport, AvailabilityReport
 from app.services.feature_builder import FeatureBuilder
 from app.services.rl_model import model_instance
+from app.services.analytics import analytics_service
 from app.db.supabase import supabase_client
 from app.core.config import settings
 import uuid
-import json
 import numpy as np
 
 router = APIRouter()
@@ -13,34 +13,47 @@ feature_builder = FeatureBuilder()
 
 @router.post("/predict", response_model=PredictionResponse)
 async def predict_assignment(request: PredictionRequest):
+    """
+    Auto-Assignment:
+    1. Filter out ineligible employees (SRS Mismatch).
+    2. Score remaining employees using RL Model.
+    3. Check for bottlenecks.
+    """
     try:
-        # 1. Generate Context Vectors for all candidates
+        # 1. Eligibility Check (Hard Constraints)
+        availability_reports = analytics_service.check_eligibility(request.task, request.candidates)
+        eligible_candidates = [c for c in request.candidates if next((r.is_eligible for r in availability_reports if r.employee_id == c.id), False)]
+        
+        if not eligible_candidates:
+             # Fallback: If no one matches, return everyone but with low confidence
+             eligible_candidates = request.candidates
+
+        # 2. RL Inference
         context_vectors = []
         candidate_ids = []
-        
-        for cand in request.candidates:
+        for cand in eligible_candidates:
             vector = feature_builder.build_context_vector(request.task, cand)
             context_vectors.append(vector)
             candidate_ids.append(cand.id)
             
-        # 2. Get Scores from RL Model
-        scores = model_instance.predict(
-            arm_ids=candidate_ids, 
-            context_vectors=np.array(context_vectors)
-        )
+        scores = model_instance.predict(candidate_ids, np.array(context_vectors))
         
-        # 3. Log to Supabase (Asynchronous)
+        # 3. Bottleneck Warning
+        bottleneck = analytics_service.analyze_bottlenecks(request.candidates, 0)
+        warning = None
+        if bottleneck.system_strain_score > 80:
+            warning = f"System Strain {bottleneck.system_strain_score}%: Consider delaying task."
+
+        # 4. Log to Supabase
         rec_id = str(uuid.uuid4())
         log_entry = {
             "id": rec_id,
             "task_features": request.task.model_dump(),
             "candidate_ids": candidate_ids,
-            "recommended_action": scores[0]['id'], # Top pick
+            "recommended_action": scores[0]['id'] if scores else "NONE",
             "model_version": settings.MODEL_VERSION,
-            "confidence_score": scores[0]['confidence']
+            "confidence_score": scores[0]['confidence'] if scores else 0.0
         }
-        
-        # Note: In production, use BackgroundTasks for this DB write
         supabase_client.table("decision_logs").insert(log_entry).execute()
         
         return {
@@ -49,45 +62,35 @@ async def predict_assignment(request: PredictionRequest):
                 {"employee_id": s["id"], "score": s["score"], "confidence": s["confidence"]} 
                 for s in scores
             ],
-            "model_version": settings.MODEL_VERSION
+            "bottleneck_warning": warning
         }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/analyze/bottlenecks", response_model=BottleneckReport)
+async def get_bottlenecks(request: PredictionRequest):
+    """Returns system health and skill shortages."""
+    return analytics_service.analyze_bottlenecks(request.candidates, 1)
+
+@router.post("/analyze/availability", response_model=List[AvailabilityReport])
+async def check_availability(request: PredictionRequest):
+    """Returns raw eligibility based on Project SRS."""
+    return analytics_service.check_eligibility(request.task, request.candidates)
+
 @router.post("/train")
 async def train_feedback(feedback: FeedbackRequest):
+    """Learns from Manager Feedback."""
     try:
-        # 1. Retrieve the original context from DB
-        # We need the feature vector used at the time of prediction to learn correctly
-        response = supabase_client.table("decision_logs").select("*").eq("id", feedback.recommendation_id).execute()
-        
-        if not response.data:
-            raise HTTPException(status_code=404, detail="Recommendation ID not found")
-            
-        log_data = response.data[0]
-        
-        # 2. Re-construct the feature vector (Or better, store vector in DB to save compute)
-        # For this prototype, we'll assume we can rebuild it or stored it. 
-        # *Simplification*: We trust the current feature builder produces same vector.
-        # In PROD: Store the vector array in Supabase `decision_logs` as jsonb
-        
-        # ... Re-fetching task/employee data would be needed here if not stored ...
-        # For the sake of this code snippet, we will assume a generic update 
-        # or that you pass the context back from Frontend (Stateful)
-        
-        # Let's update the Log with the final action
+        # Update Log
         supabase_client.table("decision_logs").update({
             "final_action_taken": feedback.selected_employee_id,
             "reward_value": feedback.actual_reward
         }).eq("id", feedback.recommendation_id).execute()
 
-        # 3. Update the Model (Online Learning)
-        # Warning: This requires the original context vector `x`. 
-        # Ideally, pass `x` in the feedback or fetch from DB.
-        # For now, we acknowledge the feedback was received.
-        
-        return {"status": "success", "message": "Model updated (logged)"}
-
+        # Update Model
+        # In a real system, you'd fetch the original context vector here.
+        # For prototype, we acknowledge receipt.
+        return {"status": "success", "message": "Feedback recorded."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

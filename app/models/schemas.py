@@ -1,34 +1,44 @@
-from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
+from pydantic import BaseModel, ConfigDict, Field
+from typing import List, Optional
 
-# --- INPUTS ---
-from pydantic import BaseModel, ConfigDict
+# --- CORE ENTITIES ---
 
-class PredictionResponse(BaseModel):
-    model_config = ConfigDict(protected_namespaces=())  # Add this line
-    
-    recommendation_id: str
-    sorted_candidates: list
-    model_version: str  # This field name was causing the warning
-    
 class TaskFeatures(BaseModel):
-    priority: str          # e.g., "High", "Medium", "Low"
+    title: str = "Untitled Task"
+    priority: str          # "High", "Medium", "Low", "Critical"
     complexity: int        # 1-10
     deadline_hours: int    # Hours until deadline
-    skills_required: List[str]
+    skills_required: List[str] # Derived from Project SRS
 
 class EmployeeCandidate(BaseModel):
     id: str                # UUID from Supabase
+    name: str              # Needed for reporting
     current_load: int      # Number of active tasks
     skills: List[str]
     role_level: str        # e.g., "Junior", "Senior"
     avg_completion_time: float # Historical metric
+    efficiency_score: float = 1.0 # 0.0 - 2.0 (1.0 is average), derived from history
+
+# --- ANALYSIS MODELS (NEW) ---
+
+class BottleneckReport(BaseModel):
+    overloaded_skills: List[str]  # Skills where Demand > Supply
+    at_risk_employees: List[str]  # Employees with > 120% load
+    system_strain_score: float    # 0-100% (Overall team capacity usage)
+    recommendation: str           # e.g. "Hire more React devs"
+
+class AvailabilityReport(BaseModel):
+    employee_id: str
+    name: str
+    is_eligible: bool             # Matches SRS hard constraints?
+    availability_score: float     # 0.0 (Busy) to 1.0 (Free)
+    match_reason: str             # "Perfect Skill Match" or "Skill Mismatch"
+
+# --- API REQUESTS/RESPONSES ---
 
 class PredictionRequest(BaseModel):
     task: TaskFeatures
     candidates: List[EmployeeCandidate]
-
-# --- OUTPUTS ---
 
 class CandidateScore(BaseModel):
     employee_id: str
@@ -36,13 +46,17 @@ class CandidateScore(BaseModel):
     confidence: float
 
 class PredictionResponse(BaseModel):
-    recommendation_id: str  # UUID for logging
+    # Fixes the "model_" namespace warning from Pydantic
+    model_config = ConfigDict(protected_namespaces=()) 
+    
+    recommendation_id: str
     sorted_candidates: List[CandidateScore]
     model_version: str
+    bottleneck_warning: Optional[str] = None # Alert if system is strained
 
 # --- FEEDBACK ---
 
 class FeedbackRequest(BaseModel):
     recommendation_id: str
     selected_employee_id: str
-    actual_reward: float    # 1.0 (Accepted), 0.0 (Rejected), or calculated metric
+    actual_reward: float    # 1.0 (Accepted), 0.0 (Rejected)
