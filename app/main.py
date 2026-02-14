@@ -8,7 +8,7 @@ app = FastAPI(title="Velocity AI Engine", version="1.0")
 origins = [
     "http://localhost:3000",
     "http://localhost:5173", 
-    "https://your-production-url.com"
+    "https://www.joinvelocity.co/velocity-ai"
 ]
 
 app.add_middleware(
