@@ -4,11 +4,13 @@ from app.api.endpoints import router
 
 app = FastAPI(title="Velocity AI Engine", version="1.0")
 
-
+# UPDATE THIS LIST
 origins = [
     "http://localhost:3000",
-    "http://localhost:5173", 
-    "https://www.joinvelocity.co/velocity-ai"
+    "http://localhost:5173",
+    "https://www.joinvelocity.co",  # <--- CRITICAL: Your production domain
+    "https://joinvelocity.co",      # <--- Good practice to include non-www too
+    "https://velocity-ai.joinvelocity.co" # (Optional) If you use subdomains
 ]
 
 app.add_middleware(
