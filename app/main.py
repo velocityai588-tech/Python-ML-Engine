@@ -8,11 +8,9 @@ app = FastAPI(title="Velocity AI Engine", version="1.0")
 origins = [
     "http://localhost:3000",
     "http://localhost:5173",
-    "https://www.joinvelocity.co",  # <--- CRITICAL: Your production domain
+    "https://www.joinvelocity.co",
     "https://joinvelocity.co",
-    "https://www.joinvelocity.co/**",  
-    "https://joinvelocity.co/**", 
-    "https://velocity-ai.joinvelocity.co" # (Optional) If you use subdomains
+    "https://velocity-ai.joinvelocity.co",
 ]
 
 app.add_middleware(
