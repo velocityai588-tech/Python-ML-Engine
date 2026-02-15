@@ -9,7 +9,9 @@ origins = [
     "http://localhost:3000",
     "http://localhost:5173",
     "https://www.joinvelocity.co",  # <--- CRITICAL: Your production domain
-    "https://joinvelocity.co",      # <--- Good practice to include non-www too
+    "https://joinvelocity.co",
+    "https://www.joinvelocity.co/**",  
+    "https://joinvelocity.co/**", 
     "https://velocity-ai.joinvelocity.co" # (Optional) If you use subdomains
 ]
 
