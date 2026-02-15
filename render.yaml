@@ -8,3 +8,9 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11
+      - key: SUPABASE_URL
+        fromService:
+          type: pserv
+          property: connectionString
+      - key: SUPABASE_KEY
+        sync: false
