@@ -1,6 +1,20 @@
 from typing import List
 from app.models.schemas import EmployeeCandidate, TaskFeatures, BottleneckReport, AvailabilityReport
 
+from app.models.schemas import EmployeeCandidate
+
+def calculate_available_hours(employee: EmployeeCandidate) -> float:
+    """
+    Calculates true available hours for the week based on base capacity, PTO, and holidays.
+    Formula: Productive Hours - PTO - Holidays
+    """
+    available_hours = (
+        employee.base_productive_hours 
+        - employee.pto_hours_this_week 
+        - employee.holiday_hours_this_week
+    )
+    
+    return max(0.0, available_hours)
 class AnalyticsService:
     def analyze_bottlenecks(self, employees: List[EmployeeCandidate], active_tasks_count: int) -> BottleneckReport:
         """

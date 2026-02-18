@@ -2,7 +2,22 @@ from pydantic import BaseModel, ConfigDict, Field
 from typing import List, Optional
 
 # --- CORE ENTITIES ---
+from pydantic import BaseModel
+from typing import List
 
+class EmployeeCandidate(BaseModel):
+    id: str
+    name: str
+    current_load: int
+    skills: List[str]
+    role_level: str
+    avg_completion_time: float
+    efficiency_score: float = 1.0
+    
+    # --- NEW CAPACITY FIELDS ---
+    base_productive_hours: float = 40.0  # Default 40, or learned average
+    pto_hours_this_week: float = 0.0
+    holiday_hours_this_week: float = 0.0
 class TaskFeatures(BaseModel):
     title: str = "Untitled Task"
     priority: str          # "High", "Medium", "Low", "Critical"
