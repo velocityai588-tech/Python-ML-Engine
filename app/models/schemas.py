@@ -75,3 +75,16 @@ class FeedbackRequest(BaseModel):
     recommendation_id: str
     selected_employee_id: str
     actual_reward: float    # 1.0 (Accepted), 0.0 (Rejected)
+
+
+class CapacityRequest(BaseModel):
+    candidates: List[EmployeeCandidate]
+
+class CapacityReport(BaseModel):
+    employee_id: str
+    name: str
+    base_productive_hours: float
+    pto_hours_this_week: float
+    holiday_hours_this_week: float
+    net_available_hours: float
+    status: str  # "Available", "At Capacity", or "Overloaded"

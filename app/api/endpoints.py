@@ -7,6 +7,7 @@ from app.services.analytics import analytics_service
 from app.db.supabase import supabase_client
 from app.core.config import settings
 import uuid
+from app.models.schemas import CapacityRequest, CapacityReport
 import numpy as np
 
 router = APIRouter()
@@ -99,3 +100,43 @@ async def train_feedback(feedback: FeedbackRequest):
         return {"status": "success", "message": "Feedback recorded."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/analyze/capacity", response_model=List[CapacityReport])
+async def check_team_capacity(request: CapacityRequest):
+    """
+    NEW ENDPOINT: Calculates the true available hours for the team based on 
+    base capacity, PTO, and holidays. Does not affect the ML model.
+    """
+    reports = []
+    
+    for emp in request.candidates:
+        # The Math: Productive - PTO - Holiday
+        net_hours = (
+            emp.base_productive_hours 
+            - emp.pto_hours_this_week 
+            - emp.holiday_hours_this_week
+        )
+        
+        # Prevent negative hours
+        net_hours = max(0.0, net_hours)
+        
+        # Determine human-readable status
+        if net_hours == 0:
+            status = "Overloaded / Out of Office"
+        elif net_hours < 10:
+            status = "At Capacity"
+        else:
+            status = "Available"
+
+        reports.append(CapacityReport(
+            employee_id=emp.id,
+            name=emp.name,
+            base_productive_hours=emp.base_productive_hours,
+            pto_hours_this_week=emp.pto_hours_this_week,
+            holiday_hours_this_week=emp.holiday_hours_this_week,
+            net_available_hours=net_hours,
+            status=status
+        ))
+        
+    # Sort by who has the most time available
+    return sorted(reports, key=lambda x: x.net_available_hours, reverse=True)
