@@ -615,3 +615,5 @@ class AnalyticsService:
             ))
         
         return trends
+
+analytics_service = AnalyticsService()
