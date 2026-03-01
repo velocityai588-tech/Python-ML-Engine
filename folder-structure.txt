@@ -1,0 +1,29 @@
+Python-ML-Engine
+├── .dockerignore
+├── .git/
+├── .gitignore
+├── app
+│   ├── api
+│   │   ├── endpoints.py
+│   │   └── __init__.py
+│   ├── core
+│   │   ├── config.py
+│   │   └── __init__.py
+│   ├── db
+│   │   ├── supabase.py
+│   │   └── __init__.py
+│   ├── main.py
+│   ├── models
+│   │   ├── schemas.py
+│   │   └── __init__.py
+│   ├── services
+│   │   ├── analytics.py
+│   │   ├── feature_builder.py
+│   │   ├── rl_model.py
+│   │   └── __init__.py
+│   └── __init__.py
+├── create_structure.py
+├── Dockerfile
+├── README.md
+├── render.yaml
+└── requirements.txt
