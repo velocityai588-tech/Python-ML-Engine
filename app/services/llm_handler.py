@@ -3,7 +3,6 @@ from app.core.config import settings
 
 class LLMHandler:
     def __init__(self):
-        # Now 'genai' will be recognized here
         self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
         self.model_id = "gemini-2.5-flash" 
 
