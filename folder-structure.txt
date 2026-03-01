@@ -4,7 +4,9 @@ Python-ML-Engine
 ├── .gitignore
 ├── app
 │   ├── api
-│   │   ├── endpoints.py
+│   │   ├── v1
+│   │   │   ├── analytics.py
+│   │   │   └── planner.py
 │   │   └── __init__.py
 │   ├── core
 │   │   ├── config.py
@@ -18,11 +20,11 @@ Python-ML-Engine
 │   │   └── __init__.py
 │   ├── services
 │   │   ├── analytics.py
-│   │   ├── feature_builder.py
+│   │   ├── llm_handler.py
+│   │   ├── planner_service.py
 │   │   ├── rl_model.py
 │   │   └── __init__.py
 │   └── __init__.py
-├── create_structure.py
 ├── Dockerfile
 ├── README.md
 ├── render.yaml
