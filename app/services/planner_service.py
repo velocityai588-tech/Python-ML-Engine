@@ -1,52 +1,97 @@
+import math
+import json
+from collections import Counter
 from app.services.llm_handler import LLMHandler
 from app.models.schemas import PlanResponse
-import json
 
 llm = LLMHandler()
 
-async def generate_project_plan(project_desc: str, employees: list):
-    # 1. ANONYMIZATION: Create a Map (ID -> Temp Name)
-    id_map = {}
-    anonymized_employees = []
+def filter_top_resources(project_desc: str, employees: list, top_k: int = 20):
+    """
+    Ranks employees using TF-IDF and expertise weighting.
+    """
+    project_tokens = project_desc.lower().split()
+    project_counter = Counter(project_tokens)
+    num_employees = len(employees)
     
-    for i, emp in enumerate(employees):
-        temp_id = f"EMP_{i+1:02}"
-        # Store metadata to map back later
+    # Calculate Document Frequency (DF) for IDF calculation
+    df_counts = Counter()
+    for emp in employees:
+        # skills is assumed to be a list of strings
+        unique_skills = set(s.lower() for s in emp.skills)
+        for skill in unique_skills:
+            df_counts[skill] += 1
+
+    scored_employees = []
+    
+    # Proficiency multipliers based on your schema levels
+    multipliers = {"advanced": 1.5, "mid": 1.2, "beginner": 1.0}
+
+    for emp in employees:
+        tfidf_score = 0.0
+        emp_skills = [s.lower() for s in emp.skills]
+        
+        for word in set(project_tokens):
+            if word in emp_skills:
+                # TF (Presence) * IDF (Log-scaled uniqueness)
+                idf = math.log(num_employees / (df_counts[word] + 1))
+                tfidf_score += idf * project_counter[word]
+        
+        # Apply Expertise Multiplier (Default to 1.0 if not specified)
+        # Note: This assumes 'proficiency' is available on the emp object
+        level = getattr(emp, 'proficiency', 'beginner').lower()
+        final_score = tfidf_score * multipliers.get(level, 1.0)
+        
+        scored_employees.append((final_score, emp))
+
+    scored_employees.sort(key=lambda x: x[0], reverse=True)
+    return [emp for score, emp in scored_employees[:top_k]]
+
+async def generate_project_plan(project_desc: str, employees: list):
+    # 1. PRE-FILTER: Narrow 140+ pool down to top 20 high-signal resources
+    relevant_employees = filter_top_resources(project_desc, employees, top_k=20)
+    
+    # 2. ANONYMIZE: Map real data to temporary 'E' IDs for PII and Token safety
+    id_map = {}
+    compact_resources = []
+    
+    for i, emp in enumerate(relevant_employees):
+        temp_id = f"E{i+1}"
         id_map[temp_id] = {"id": emp.id, "name": emp.name}
         
-        anonymized_employees.append({
-            "temp_id": temp_id,
-            "skills": emp.skills,
-            "capacity": emp.capacity_hours_per_week
-        })
+        # Positional array: [ID, Skills, Capacity]
+        compact_resources.append([
+            temp_id, 
+            emp.skills, 
+            emp.capacity_hours_per_week
+        ])
 
-    # 2. SYSTEM PROMPT
+    # 3. OPTIMIZED PROMPT
     prompt = f"""
-    Act as a Technical Project Manager. 
-    Project Description: {project_desc}
+    Role: Technical PM.
+    Task: Decompose project and assign resources.
     
-    Available Resources: {json.dumps(anonymized_employees)}
+    Resources [ID, Skills, Weekly Cap]:
+    {compact_resources}
     
-    Task:
-    1. Break down the project into logical technical tasks.
-    2. Assign resources based on skill fit and capacity.
-    3. Calculate match_percentage (0-100).
-    4. Provide a brief justification for each choice.
+    Project Context:
+    {project_desc}
+    
+    Constraints: Assign by skill-fit and capacity.
+    Output: JSON only.
     """
 
-    # 3. CALL LLM (Uses the schema we defined in Step 1)
-    # The 'response_schema' in LLMHandler ensures this returns a PlanResponse object
+    # 4. LLM CALL
     plan_data = await llm.generate_structured(prompt, PlanResponse)
 
-    # 4. DE-ANONYMIZATION: Replace Temp IDs with real data
+    # 5. DE-ANONYMIZE: Restore real UUIDs and Names
     for task in plan_data.suggested_tasks:
         for assignment in task.assignments:
-            # Look up the real info using the temp_id (EMP_01, etc)
-            temp_id = assignment.real_user_id # Gemini used temp_id here initially
+            temp_id = assignment.real_user_id
             real_info = id_map.get(temp_id)
             
             if real_info:
-                assignment.real_user_id = real_info["id"]
+                assignment.real_user_id = str(real_info["id"])
                 assignment.employee_name = real_info["name"]
 
     return plan_data
