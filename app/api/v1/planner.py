@@ -1,39 +1,43 @@
 from fastapi import APIRouter, HTTPException
-from app.models.schemas import PlanRequest, PlanResponse
-from app.services.planner_service import generate_project_plan
+from typing import List
+from app.models.schemas import (
+    ProjectInput,           # <--- NEW LIGHTWEIGHT INPUT
+    DecompositionResponse,
+    AllocationRequest,
+    Assignment
+)
+from app.services.planner_service import (
+    decompose_project, 
+    allocate_resource_for_task
+)
 
 router = APIRouter()
 
-@router.post("/generate", response_model=PlanResponse)
-async def create_plan(payload: PlanRequest):
+# ---------------------------------------------------------
+# ROUTE 1: Project Decomposition (The "Task Breaker")
+# ---------------------------------------------------------
+@router.post("/decompose", response_model=DecompositionResponse)
+async def step_one_decompose(payload: ProjectInput):
     """
-    Endpoint to trigger the AI planning engine. 
-    Fetches real-time Jira history and leave status from Supabase.
+    Step 1: Breaks the project description into logical technical tasks.
+    Input: {"project_description": "..."}
     """
     try:
-        # Validate that the project window is provided
-        if not payload.start_date or not payload.end_date:
-            raise HTTPException(
-                status_code=400, 
-                detail="Project start_date and end_date are required for leave conflict checks."
-            )
-
-        # Pass the context-heavy parameters to the service layer
-        # Note: we no longer pass payload.employees; we fetch from the DB using org_id
-        plan = await generate_project_plan(
-            project_desc=payload.project_description,
-            org_id=payload.org_id,
-            start_date=payload.start_date,
-            end_date=payload.end_date
-        )
-        
-        return plan
-
+        # Pass just the string to the service
+        return await decompose_project(payload.project_description)
     except Exception as e:
-        # Log the internal error details for debugging
-        print(f"Server Error in /planner/generate: {str(e)}")
-        
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Planning Error: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Decomposition Error: {str(e)}")
+
+# ---------------------------------------------------------
+# ROUTE 2: Resource Allocation (The "Matchmaker")
+# ---------------------------------------------------------
+@router.post("/allocate", response_model=List[Assignment])
+async def step_two_allocate(payload: AllocationRequest):
+    """
+    Step 2: Assigns employees to a specific approved task.
+    Input: Full context (Org ID, Dates, Task Details)
+    """
+    try:
+        return await allocate_resource_for_task(payload)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Allocation Error: {str(e)}")
