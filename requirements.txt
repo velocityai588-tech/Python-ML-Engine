@@ -1,10 +1,16 @@
+# Web Framework & Server
 fastapi
 uvicorn[standard]
-pydantic
-pydantic-settings
+
+# LLM & AI
+google-genai
+pydantic[email]
+python-dotenv
+
+# Database & Supabase (If you call it directly from Python)
 supabase
 httpx
-numpy
-scikit-learn
-python-dotenv
-pandas
+
+# Utilities
+python-multipart
+typing-extensions
