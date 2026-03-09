@@ -5,6 +5,7 @@ uvicorn[standard]
 # LLM & AI
 google-genai
 pydantic[email]
+pydantic-settings
 python-dotenv
 
 # Database & Supabase (If you call it directly from Python)
