@@ -35,3 +35,26 @@ class Assignment(BaseModel):
 
 class TaskAssignmentsResponse(BaseModel):
     assignments: List[Assignment]
+
+class TaskDetail(BaseModel):
+    task_name: str
+    estimated_hours: int
+    required_skills: List[str] = []
+    task_description: Optional[str] = "Project task"
+
+# New Schema for the Batch Request
+class BatchAllocationRequest(BaseModel):
+    org_id: str
+    start_date: str
+    end_date: str
+    tasks: List[TaskDetail]
+
+# Output Schema for the Team Member
+class TeamMemberResponse(BaseModel):
+    id: str # UUID from DB
+    name: str
+    role: str
+    match_percentage: int
+    availability: int
+    task_fit: List[str] # List of task names they were assigned to
+    justification: str
