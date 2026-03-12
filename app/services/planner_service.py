@@ -172,24 +172,44 @@ async def allocate_project_team(request: BatchAllocationRequest) -> List[dict]:
     
     team_roster = {}
     for asn in response.assignments:
-        real_info = id_map.get(asn.real_user_id)
+        temp_id = asn.real_user_id
+        real_info = id_map.get(temp_id)
+        
         if not real_info: continue
         
         user_uuid = str(real_info['id'])
+
+        # --- DYNAMIC AVAILABILITY CALCULATION ---
+        # Find the original employee record from all_employees to get capacity/leave
+        emp_record = next((e for e in all_employees if str(e['id']) == user_uuid), {})
+        
+        base_capacity = emp_record.get('capacity_hours_per_week', 40)
+        leave_status = emp_record.get('leave_status', 'Available')
+        
+        # Calculate availability percentage
+        # If they are on leave, availability is 0. 
+        # Otherwise, we calculate based on their capacity.
+        if leave_status != 'Available' and leave_status is not None:
+            calculated_availability = 0
+        else:
+            # For now, we assume availability is high, but you could subtract 
+            # hours already assigned to other projects here if your RPC returns 'current_load'
+            current_load = emp_record.get('current_load_hours', 0)
+            calculated_availability = max(0, min(100, int(((base_capacity - current_load) / base_capacity) * 100)))
+
         if user_uuid not in team_roster:
             team_roster[user_uuid] = {
                 "id": user_uuid,
                 "name": real_info['name'],
                 "role": real_info['role'],
                 "match_percentage": asn.match_percentage,
-                "availability": 100, 
+                "availability": calculated_availability, # <--- NOW DYNAMIC
                 "task_fit": [asn.task_name],
                 "justification": asn.justification,
                 "avatar": real_info['name'][:2].upper()
             }
         else:
             team_roster[user_uuid]["task_fit"].append(asn.task_name)
-            team_roster[user_uuid]["match_percentage"] = (team_roster[user_uuid]["match_percentage"] + asn.match_percentage) // 2
             
     return list(team_roster.values())
 
