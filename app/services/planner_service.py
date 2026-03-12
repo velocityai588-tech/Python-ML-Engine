@@ -8,7 +8,8 @@ from app.models.schemas import (
     DecompositionResponse, 
     AllocationRequest, 
     Assignment,
-    ProjectInput
+    ProjectInput,
+    BatchAllocationRequest
 )
 from app.db.supabase import supabase
 
