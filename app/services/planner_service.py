@@ -83,6 +83,52 @@ def filter_top_resources(task_context: str, employees: list, top_k: int = 10):
 # ==========================================
 # STEP 2: ALLOCATION LOGIC (Main Function)
 # ==========================================
+async def allocate_project_team(request: BatchAllocationRequest) -> List[dict]:
+    """
+    Loops through all project tasks, finds the best candidate for each, 
+    and returns an aggregated team roster.
+    """
+    team_roster = {} # Dictionary to aggregate tasks by user_id
+
+    for task in request.tasks:
+        # Create a single task request
+        single_req = AllocationRequest(
+            org_id=request.org_id,
+            task_name=task.task_name,
+            task_description=task.task_description or task.task_name,
+            required_skills=task.required_skills,
+            estimated_hours=task.estimated_hours,
+            start_date=request.start_date,
+            end_date=request.end_date
+        )
+        
+        # Call the existing LLM logic we built
+        assignments = await allocate_resource_for_task(single_req)
+        
+        # Aggregate results
+        for asn in assignments:
+            user_id = asn.real_user_id
+            
+            if user_id not in team_roster:
+                # Add new team member to roster
+                # Note: We simulate availability and match % here. In production, 
+                # you'd pull exact capacity from the DB context.
+                team_roster[user_id] = {
+                    "id": user_id,
+                    "name": asn.employee_name,
+                    "role": "Engineer", # Ideally fetched from DB
+                    "match_percentage": 90, # Simulated or parsed from LLM
+                    "availability": 100, # Simulated
+                    "task_fit": [task.task_name],
+                    "justification": asn.reason,
+                    "avatar": asn.employee_name[:2].upper() if asn.employee_name else "AI"
+                }
+            else:
+                # Add this task to their existing roster profile
+                team_roster[user_id]["task_fit"].append(task.task_name)
+                
+    return list(team_roster.values())
+
 async def allocate_resource_for_task(request: AllocationRequest):
     """
     Assigns the best employee to a single task approved by the manager.

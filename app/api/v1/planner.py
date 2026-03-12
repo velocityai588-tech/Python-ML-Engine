@@ -4,12 +4,15 @@ from app.models.schemas import (
     ProjectInput,           # <--- NEW LIGHTWEIGHT INPUT
     DecompositionResponse,
     AllocationRequest,
-    Assignment
+    Assignment,
+    BatchAllocationRequest
 )
 from app.services.planner_service import (
+    allocate_project_team,
     decompose_project, 
     allocate_resource_for_task
 )
+
 
 router = APIRouter()
 
@@ -41,3 +44,8 @@ async def step_two_allocate(payload: AllocationRequest):
         return await allocate_resource_for_task(payload)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Allocation Error: {str(e)}")
+    
+@router.post("/api/v1/planner/allocate")
+async def allocate_team_endpoint(req: BatchAllocationRequest):
+    team = await allocate_project_team(req)
+    return {"recommended_team": team}
