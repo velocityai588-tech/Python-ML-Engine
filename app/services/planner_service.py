@@ -14,69 +14,17 @@ from app.db.supabase import supabase
 
 llm = LLMHandler()
 
-# ==========================================
-# STEP 1: DECOMPOSITION LOGIC
-# ==========================================
-async def decompose_project(project_desc: str):
-    """
-    Uses Gemini to break a project description into technical tasks.
-    """
-    # Safe prompt construction using f-string with escaped curly braces for JSON examples
-    prompt = f"""
-    You are a Technical Project Manager responsible for decomposing software projects into clear engineering tasks.
-
-    Your goal is to convert the provided project description into a structured list of technical tasks that an engineering team can execute.
-
-    -------------------------------------
-    PROJECT DESCRIPTION
-    {project_desc}
-    -------------------------------------
-
-    TASK DECOMPOSITION RULES
-    Break the project into logical engineering tasks.
-    Each task must:
-    • Represent a concrete engineering activity  
-    • Be implementable by a single engineer  
-    • Be small enough to complete within **4–16 hours**
-
-    Include tasks for:
-    - Architecture / setup
-    - Backend development
-    - Frontend development
-    - Database design
-    - API implementation
-    - Testing
-
-    OUTPUT REQUIREMENTS
-    Return ONLY valid JSON.
-    The output must match this structure:
-
-    {{
-      "suggested_tasks": [
-        {{
-          "task_name": "Task Title",
-          "description": "Technical details...",
-          "estimated_hours": 8,
-          "required_skills": ["React", "Node.js"]
-        }}
-      ]
-    }}
-
-    Rules:
-    - Return between **5 and 15 tasks**
-    - Do not include explanations outside JSON
-    - Do not include markdown
-    """
-    
-    return await llm.generate_structured(prompt, DecompositionResponse)
-
+# ... (Keep your decompose_project function exactly as it is) ...
 
 # ==========================================
 # STEP 2: ALLOCATION LOGIC (Helper Functions)
 # ==========================================
 def filter_top_resources(task_context: str, employees: list, top_k: int = 10):
     """
-    Ranks employees based on skill match (TF-IDF) + Role Weight.
+    Ranks employees based on: 
+    1. Skill/Role Match (TF-IDF)
+    2. Fallback Baseline (for empty profiles)
+    3. Capacity Boost (Tie-breaker)
     """
     tokens = task_context.lower().split()
     if not tokens or not employees:
@@ -85,33 +33,49 @@ def filter_top_resources(task_context: str, employees: list, top_k: int = 10):
     token_counts = Counter(tokens)
     num_employees = len(employees)
     
+    # Calculate Document Frequency across both SKILLS and ROLES
     df_counts = Counter()
     for emp in employees:
-        # Safe get for skills (handled by SQL aggregation now)
         skills_list = emp.get('skills') or []
-        unique_skills = set(str(s).lower() for s in skills_list)
-        for skill in unique_skills:
-            df_counts[skill] += 1
+        role_words = str(emp.get('role', '')).lower().split()
+        
+        # Combine skills and role words to build our dictionary
+        unique_terms = set(str(s).lower() for s in skills_list).union(role_words)
+        for term in unique_terms:
+            df_counts[term] += 1
 
     scored_employees = []
-    # Boost Managers/Admins slightly for complex tasks
-    multipliers = {"admin": 1.2, "manager": 1.1, "employee": 1.0}
 
     for emp in employees:
         score = 0.0
+        
+        # Extract employee data safely
         skills_list = emp.get('skills') or []
         emp_skills = [str(s).lower() for s in skills_list]
+        role = str(emp.get('role', 'employee')).lower()
+        role_words = role.split()
         
+        # 1. TF-IDF Scoring for Skills AND Role
         for word in set(tokens):
-            if word in emp_skills:
-                # Add +1 smoothing to avoid division by zero
+            if word in emp_skills or word in role_words:
                 idf = math.log(num_employees / (df_counts[word] + 1))
-                score += idf * token_counts[word]
+                # Give a 50% higher weight if the word is specifically in their Job Title
+                weight = 1.5 if word in role_words else 1.0 
+                score += idf * token_counts[word] * weight
         
-        role = (emp.get('role') or 'employee').lower()
-        final_score = score * multipliers.get(role, 1.0)
+        # 2. Fallback Baseline (If score is 0, give them a tiny bump so they aren't eliminated)
+        if score == 0.0:
+            score += 0.1 
+            
+        # 3. Capacity Boost (Tie-breaker & Prioritize availability)
+        # e.g., 40 hours = +0.40 score, 10 hours = +0.10 score
+        capacity = emp.get('capacity_hours_per_week', 0)
+        capacity_boost = (capacity / 100.0) 
+        
+        final_score = score + capacity_boost
         scored_employees.append((final_score, emp))
 
+    # Sort descending by final score
     scored_employees.sort(key=lambda x: x[0], reverse=True)
     return [emp for score, emp in scored_employees[:top_k]]
 
@@ -119,6 +83,52 @@ def filter_top_resources(task_context: str, employees: list, top_k: int = 10):
 # ==========================================
 # STEP 2: ALLOCATION LOGIC (Main Function)
 # ==========================================
+async def allocate_project_team(request: BatchAllocationRequest) -> List[dict]:
+    """
+    Loops through all project tasks, finds the best candidate for each, 
+    and returns an aggregated team roster.
+    """
+    team_roster = {} # Dictionary to aggregate tasks by user_id
+
+    for task in request.tasks:
+        # Create a single task request
+        single_req = AllocationRequest(
+            org_id=request.org_id,
+            task_name=task.task_name,
+            task_description=task.task_description or task.task_name,
+            required_skills=task.required_skills,
+            estimated_hours=task.estimated_hours,
+            start_date=request.start_date,
+            end_date=request.end_date
+        )
+        
+        # Call the existing LLM logic we built
+        assignments = await allocate_resource_for_task(single_req)
+        
+        # Aggregate results
+        for asn in assignments:
+            user_id = asn.real_user_id
+            
+            if user_id not in team_roster:
+                # Add new team member to roster
+                # Note: We simulate availability and match % here. In production, 
+                # you'd pull exact capacity from the DB context.
+                team_roster[user_id] = {
+                    "id": user_id,
+                    "name": asn.employee_name,
+                    "role": "Engineer", # Ideally fetched from DB
+                    "match_percentage": 90, # Simulated or parsed from LLM
+                    "availability": 100, # Simulated
+                    "task_fit": [task.task_name],
+                    "justification": asn.reason,
+                    "avatar": asn.employee_name[:2].upper() if asn.employee_name else "AI"
+                }
+            else:
+                # Add this task to their existing roster profile
+                team_roster[user_id]["task_fit"].append(task.task_name)
+                
+    return list(team_roster.values())
+
 async def allocate_resource_for_task(request: AllocationRequest):
     """
     Assigns the best employee to a single task approved by the manager.
@@ -138,7 +148,7 @@ async def allocate_resource_for_task(request: AllocationRequest):
     if not all_employees:
         return []
 
-    # 2. FILTER CANDIDATES
+    # 2. FILTER CANDIDATES (Now resilient to sparse data)
     task_context = f"{request.task_name} {request.task_description} {' '.join(request.required_skills)}"
     relevant_employees = filter_top_resources(task_context, all_employees, top_k=10)
     
@@ -152,29 +162,65 @@ async def allocate_resource_for_task(request: AllocationRequest):
         
         compact_resources.append({
             "id": temp_id,
+            "role": emp.get('role', 'Unknown Role'), # Added role for LLM context
             "skills": emp.get('skills', []),
             "capacity": emp.get('capacity_hours_per_week', 40),
             "history": (emp.get('jira_history') or [])[:3],
             "leave": emp.get('leave_status') or "Available"
         })
 
-    # 4. CONSTRUCT PROMPT
+    # 4. CONSTRUCT PROMPT (Updated with Sparse Data Instructions)
     prompt = f"""
-    Act as a Technical PM. Assign the best resource for the task: '{request.task_name}'.
-    
-    Task Description: {request.task_description}
+    You are a Technical Program Manager responsible for assigning engineering tasks to internal resources.
+
+    Your job is to analyze a task and allocate the most suitable candidate(s) from the provided resource list.
+
+    --------------------------------------------------
+
+    TASK DETAILS
+
+    Task Name: {request.task_name}
+    Description: {request.task_description}
     Required Skills: {request.required_skills}
     Est. Hours: {request.estimated_hours}
-    Dates: {request.start_date} to {request.end_date}
+    Task Duration: {request.start_date} → {request.end_date}
 
-    Candidates (Anonymized):
+    --------------------------------------------------
+
+    AVAILABLE RESOURCES (Anonymized)
+
     {compact_resources}
 
-    Assignment Rules:
-    1. Match Required Skills.
-    2. Check 'history' for similar past work.
-    3. Check 'leave' for conflicts.
-    4. Return a list of assignments.
+    --------------------------------------------------
+
+    ASSIGNMENT RULES (Handling Sparse Data)
+
+    Evaluate candidates using this priority order. You MUST account for missing data (new employees).
+
+    1. **Relevant Jira History:** If a candidate has successfully completed similar tasks, prioritize them.
+    2. **Skill Match:** If history is missing, look at their specific 'skills' array.
+    3. **Role Fallback:** If BOTH history and skills are empty, evaluate if their 'role' logically aligns with the task. Do NOT penalize candidates solely for missing history; they may be new hires.
+    4. **Availability & Capacity:** - Candidate must NOT have overlapping leave during the task duration.
+       - If candidates are equally matched, prioritize the one with the highest available capacity.
+    5. **Task Splitting:** Assign to ONE candidate when possible. Use TWO only if estimated hours exceed single capacity.
+
+    --------------------------------------------------
+
+    OUTPUT FORMAT
+
+    Return ONLY structured JSON. 
+    The 'reason' string must briefly explain why they were chosen, referencing their capacity, history, or role.
+
+    {{
+      "assignments": [
+        {{
+          "real_user_id": "Candidate ID (e.g., E1)",
+          "employee_name": "Leave blank",
+          "match_percentage": 95,
+          "justification": "Selected because their role matches the requirement and they have 40 hours of capacity."
+        }}
+      ]
+    }}
     """
     
     # 5. DEFINE WRAPPER MODEL LOCALLY
