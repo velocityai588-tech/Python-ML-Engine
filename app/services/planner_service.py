@@ -15,17 +15,36 @@ from app.db.supabase import supabase
 
 llm = LLMHandler()
 
-# ... (Keep your decompose_project function exactly as it is) ...
+# ==========================================
+# STEP 1: DECOMPOSITION LOGIC
+# ==========================================
+async def decompose_project(project_description: str) -> DecompositionResponse:
+    """
+    Takes a project description, analyzes it via LLM, and returns structured tasks.
+    """
+    prompt = f"""
+    You are an expert Technical Program Manager. 
+    Analyze the following project description and break it down into logical, sequential engineering tasks.
+
+    For each task, provide:
+    1. A concise task name.
+    2. A brief description of the work.
+    3. An estimated time to complete in hours.
+    4. A list of exact technical skills required (e.g., ["React", "Node.js", "SQL"]).
+
+    Project Description:
+    {project_description}
+    """
+    
+    response = await llm.generate_structured(prompt, DecompositionResponse)
+    return response
 
 # ==========================================
 # STEP 2: ALLOCATION LOGIC (Helper Functions)
 # ==========================================
 def filter_top_resources(task_context: str, employees: list, top_k: int = 10):
     """
-    Ranks employees based on: 
-    1. Skill/Role Match (TF-IDF)
-    2. Fallback Baseline (for empty profiles)
-    3. Capacity Boost (Tie-breaker)
+    Ranks employees based on Skill/Role Match, Fallback Baseline, and Capacity.
     """
     tokens = task_context.lower().split()
     if not tokens or not employees:
@@ -34,65 +53,50 @@ def filter_top_resources(task_context: str, employees: list, top_k: int = 10):
     token_counts = Counter(tokens)
     num_employees = len(employees)
     
-    # Calculate Document Frequency across both SKILLS and ROLES
     df_counts = Counter()
     for emp in employees:
         skills_list = emp.get('skills') or []
         role_words = str(emp.get('role', '')).lower().split()
-        
-        # Combine skills and role words to build our dictionary
         unique_terms = set(str(s).lower() for s in skills_list).union(role_words)
         for term in unique_terms:
             df_counts[term] += 1
 
     scored_employees = []
-
     for emp in employees:
         score = 0.0
-        
-        # Extract employee data safely
         skills_list = emp.get('skills') or []
         emp_skills = [str(s).lower() for s in skills_list]
         role = str(emp.get('role', 'employee')).lower()
         role_words = role.split()
         
-        # 1. TF-IDF Scoring for Skills AND Role
         for word in set(tokens):
             if word in emp_skills or word in role_words:
                 idf = math.log(num_employees / (df_counts[word] + 1))
-                # Give a 50% higher weight if the word is specifically in their Job Title
                 weight = 1.5 if word in role_words else 1.0 
                 score += idf * token_counts[word] * weight
         
-        # 2. Fallback Baseline (If score is 0, give them a tiny bump so they aren't eliminated)
         if score == 0.0:
             score += 0.1 
             
-        # 3. Capacity Boost (Tie-breaker & Prioritize availability)
-        # e.g., 40 hours = +0.40 score, 10 hours = +0.10 score
         capacity = emp.get('capacity_hours_per_week', 0)
         capacity_boost = (capacity / 100.0) 
         
         final_score = score + capacity_boost
         scored_employees.append((final_score, emp))
 
-    # Sort descending by final score
     scored_employees.sort(key=lambda x: x[0], reverse=True)
     return [emp for score, emp in scored_employees[:top_k]]
 
-
 # ==========================================
-# STEP 2: ALLOCATION LOGIC (Main Function)
+# STEP 2: ALLOCATION LOGIC (Main Functions)
 # ==========================================
 async def allocate_project_team(request: BatchAllocationRequest) -> List[dict]:
     """
-    Loops through all project tasks, finds the best candidate for each, 
-    and returns an aggregated team roster.
+    Loops through all project tasks and returns an aggregated team roster.
     """
-    team_roster = {} # Dictionary to aggregate tasks by user_id
+    team_roster = {}
 
     for task in request.tasks:
-        # Create a single task request
         single_req = AllocationRequest(
             org_id=request.org_id,
             task_name=task.task_name,
@@ -103,38 +107,31 @@ async def allocate_project_team(request: BatchAllocationRequest) -> List[dict]:
             end_date=request.end_date
         )
         
-        # Call the existing LLM logic we built
         assignments = await allocate_resource_for_task(single_req)
         
-        # Aggregate results
         for asn in assignments:
             user_id = asn.real_user_id
             
             if user_id not in team_roster:
-                # Add new team member to roster
-                # Note: We simulate availability and match % here. In production, 
-                # you'd pull exact capacity from the DB context.
                 team_roster[user_id] = {
                     "id": user_id,
                     "name": asn.employee_name,
-                    "role": "Engineer", # Ideally fetched from DB
-                    "match_percentage": 90, # Simulated or parsed from LLM
-                    "availability": 100, # Simulated
+                    "role": "Engineer", 
+                    "match_percentage": asn.match_percentage,
+                    "availability": 100, 
                     "task_fit": [task.task_name],
-                    "justification": asn.reason,
+                    "justification": asn.justification, # Fixed: was asn.reason
                     "avatar": asn.employee_name[:2].upper() if asn.employee_name else "AI"
                 }
             else:
-                # Add this task to their existing roster profile
                 team_roster[user_id]["task_fit"].append(task.task_name)
                 
     return list(team_roster.values())
 
 async def allocate_resource_for_task(request: AllocationRequest):
     """
-    Assigns the best employee to a single task approved by the manager.
+    Assigns the best employee to a single task using the Gemini Matchmaker.
     """
-    # 1. FETCH CONTEXT
     try:
         rpc_response = supabase.rpc('get_project_context', {
             'org_uuid': request.org_id,
@@ -149,89 +146,42 @@ async def allocate_resource_for_task(request: AllocationRequest):
     if not all_employees:
         return []
 
-    # 2. FILTER CANDIDATES (Now resilient to sparse data)
     task_context = f"{request.task_name} {request.task_description} {' '.join(request.required_skills)}"
     relevant_employees = filter_top_resources(task_context, all_employees, top_k=10)
     
-    # 3. PREPARE ANONYMIZED DATA FOR LLM
     compact_resources = []
     id_map = {}
-    
     for i, emp in enumerate(relevant_employees):
         temp_id = f"E{i+1}"
         id_map[temp_id] = {"id": emp['id'], "name": emp['name']}
-        
         compact_resources.append({
             "id": temp_id,
-            "role": emp.get('role', 'Unknown Role'), # Added role for LLM context
+            "role": emp.get('role', 'Unknown Role'),
             "skills": emp.get('skills', []),
             "capacity": emp.get('capacity_hours_per_week', 40),
             "history": (emp.get('jira_history') or [])[:3],
             "leave": emp.get('leave_status') or "Available"
         })
 
-    # 4. CONSTRUCT PROMPT (Updated with Sparse Data Instructions)
     prompt = f"""
-    You are a Technical Program Manager responsible for assigning engineering tasks to internal resources.
-
-    Your job is to analyze a task and allocate the most suitable candidate(s) from the provided resource list.
-
-    --------------------------------------------------
-
-    TASK DETAILS
-
-    Task Name: {request.task_name}
-    Description: {request.task_description}
-    Required Skills: {request.required_skills}
-    Est. Hours: {request.estimated_hours}
-    Task Duration: {request.start_date} → {request.end_date}
-
-    --------------------------------------------------
-
-    AVAILABLE RESOURCES (Anonymized)
-
-    {compact_resources}
-
-    --------------------------------------------------
-
-    ASSIGNMENT RULES (Handling Sparse Data)
-
-    Evaluate candidates using this priority order. You MUST account for missing data (new employees).
-
-    1. **Relevant Jira History:** If a candidate has successfully completed similar tasks, prioritize them.
-    2. **Skill Match:** If history is missing, look at their specific 'skills' array.
-    3. **Role Fallback:** If BOTH history and skills are empty, evaluate if their 'role' logically aligns with the task. Do NOT penalize candidates solely for missing history; they may be new hires.
-    4. **Availability & Capacity:** - Candidate must NOT have overlapping leave during the task duration.
-       - If candidates are equally matched, prioritize the one with the highest available capacity.
-    5. **Task Splitting:** Assign to ONE candidate when possible. Use TWO only if estimated hours exceed single capacity.
-
-    --------------------------------------------------
-
-    OUTPUT FORMAT
-
-    Return ONLY structured JSON. 
-    The 'reason' string must briefly explain why they were chosen, referencing their capacity, history, or role.
-
-    {{
-      "assignments": [
-        {{
-          "real_user_id": "Candidate ID (e.g., E1)",
-          "employee_name": "Leave blank",
-          "match_percentage": 95,
-          "justification": "Selected because their role matches the requirement and they have 40 hours of capacity."
-        }}
-      ]
-    }}
+    You are a Technical Program Manager. Assign engineering tasks to resources.
+    TASK: {request.task_name} ({request.estimated_hours}h)
+    RESOURCES: {compact_resources}
+    
+    RULES:
+    1. Prioritize Jira History.
+    2. Fallback to Role match if history/skills are missing.
+    3. Tie-break with highest capacity.
+    
+    OUTPUT JSON:
+    {{ "assignments": [ {{ "real_user_id": "E1", "employee_name": "", "match_percentage": 90, "justification": "..." }} ] }}
     """
     
-    # 5. DEFINE WRAPPER MODEL LOCALLY
     class AllocationResponseWrapper(BaseModel):
         assignments: List[Assignment]
 
-    # 6. CALL LLM
     response = await llm.generate_structured(prompt, AllocationResponseWrapper)
     
-    # 7. DE-ANONYMIZE
     final_assignments = response.assignments
     for asn in final_assignments:
         real_info = id_map.get(asn.real_user_id)
