@@ -23,26 +23,44 @@ async def decompose_project(project_description: str) -> DecompositionResponse:
     Takes a project description, analyzes it via LLM, and returns structured tasks.
     """
     prompt = f"""
-    You are an expert Technical Program Manager. 
-    Analyze the following project description and break it down into logical, sequential engineering tasks.
+    ### ROLE
+    You are a Senior Technical Program Manager and System Architect. Your goal is to take a high-level project vision and turn it into a concrete, executable engineering roadmap.
 
-    For each task, provide:
-    1. A concise task name.
-    2. A brief description of the work.
-    3. An estimated time to complete in hours.
-    4. A list of exact technical skills required (e.g., ["React", "Node.js", "SQL"]).
-
-    Project Description:
+    ### TASK
+    Analyze the project description provided and break it down into logical, sequential engineering tasks.
+    - Focus on technical milestones (e.g., API design, Database schema, Frontend components).
+    - Each task should be sized between 4 to 24 hours.
+    - 'required_skills' must use industry-standard naming (e.g., 'PostgreSQL', 'React').
+    - Ensure tasks are "MECE" (Mutually Exclusive, Collectively Exhaustive).
+    - Focus on technical milestones (API design, Database schema, Frontend components) rather than vague goals.
+    - Each task should be sized between 4 to 24 hours. If a task is larger, break it down further.
+    
+    ### PROJECT DESCRIPTION
     {project_description}
+
+    ### OUTPUT FORMAT & QUALITY STANDARDS
+    You must return a JSON object following the `DecompositionResponse` schema. 
+    Each task in `suggested_tasks` must adhere to these descriptive standards:
+
+    1. **task_name**: Use action-oriented, professional titles (e.g., "Implement JWT Authentication" instead of "Login stuff").
+    2. **description**: Provide 2-3 sentences explaining the technical scope, specific endpoints to be created, or database tables to be modified. It should be clear enough for a developer to start work.
+    3. **estimated_hours**: Provide a realistic estimate. 
+        - Small UI tweaks: 2-4h
+        - CRUD APIs: 6-12h
+        - Complex Logic/Integrations: 16-24h
+    4. **required_skills**: List 2-4 specific technologies. Avoid generic terms like "Programming". Use "TypeScript", "Tailwind CSS", "Redis", etc.
+
+    Ensure the `analysis_summary` provides a high-level technical architectural overview of the approach you've chosen.
     """
     
     response = await llm.generate_structured(prompt, DecompositionResponse)
     return response
 
+
 # ==========================================
 # STEP 2: ALLOCATION LOGIC (Helper Functions)
 # ==========================================
-def filter_top_resources(task_context: str, employees: list, top_k: int = 10):
+def filter_top_resources(task_context: str, employees: list, top_k: int = 15):
     """
     Ranks employees based on Skill/Role Match, Fallback Baseline, and Capacity.
     """
@@ -87,50 +105,125 @@ def filter_top_resources(task_context: str, employees: list, top_k: int = 10):
     scored_employees.sort(key=lambda x: x[0], reverse=True)
     return [emp for score, emp in scored_employees[:top_k]]
 
+
 # ==========================================
 # STEP 2: ALLOCATION LOGIC (Main Functions)
 # ==========================================
+
 async def allocate_project_team(request: BatchAllocationRequest) -> List[dict]:
     """
-    Loops through all project tasks and returns an aggregated team roster.
+    Allocates an entire project team in a single LLM call to prevent 429 errors.
     """
-    team_roster = {}
+    # 1. FETCH ALL EMPLOYEES ONCE
+    try:
+        rpc_response = supabase.rpc('get_project_context', {
+            'org_uuid': request.org_id,
+            'start_dt': request.start_date,
+            'end_dt': request.end_date
+        }).execute()
+        all_employees = rpc_response.data
+    except Exception as e:
+        print(f"Supabase RPC Error: {e}")
+        return []
 
-    for task in request.tasks:
-        single_req = AllocationRequest(
-            org_id=request.org_id,
-            task_name=task.task_name,
-            task_description=task.task_description or task.task_name,
-            required_skills=task.required_skills,
-            estimated_hours=task.estimated_hours,
-            start_date=request.start_date,
-            end_date=request.end_date
-        )
+    if not all_employees:
+        return []
+
+    # 2. PREPARE COLLECTIVE CONTEXT
+    # Flatten all tasks to find the best pool of candidates for the whole project
+    all_task_text = " ".join([f"{t.task_name} {' '.join(t.required_skills)}" for t in request.tasks])
+    relevant_employees = filter_top_resources(all_task_text, all_employees, top_k=15)
+    
+    compact_resources = []
+    id_map = {}
+    for i, emp in enumerate(relevant_employees):
+        temp_id = f"E{i+1}"
+        id_map[temp_id] = {"id": emp['id'], "name": emp['name'], "role": emp.get('role', 'Engineer')}
+        compact_resources.append({
+            "id": temp_id,
+            "role": emp.get('role', 'Unknown Role'),
+            "skills": emp.get('skills', []),
+            "capacity": emp.get('capacity_hours_per_week', 40),
+            "history": (emp.get('jira_history') or [])[:3]
+        })
+
+    # 3. CONSTRUCT BATCH PROMPT
+    prompt = f"""
+    ### ROLE
+    You are an AI Resource Manager specialized in technical team optimization.
+
+    ### OBJECTIVE
+    Match the provided list of tasks to the most qualified engineers. Maximize project quality while balancing workload.
+
+    ### ALLOCATION HIERARCHY
+    1. **Proven Expertise:** Prioritize engineers with successful Jira history matching the task.
+    2. **Technical Alignment:** Match 'required_skills' to engineer 'skills'.
+    3. **Role Validation:** Use 'role' as a proxy if skills data is sparse (e.g., Backend Dev for API tasks).
+    4. **Load Balancing:** Distribute tasks fairly. Do not exceed an engineer's weekly capacity.
+
+    ### DATA
+    TASKS: {json.dumps([t.model_dump() for t in request.tasks])}
+    RESOURCES: {json.dumps(compact_resources)}
+
+    ### OUTPUT FORMAT & JUSTIFICATION STANDARDS
+Return a JSON object with a list of `assignments`. Each assignment must follow these descriptive guidelines:
+
+1. **match_percentage**: 
+    - 90-100%: Perfect match between history, role, and skills.
+    - 70-89%: Strong role/skill match but lacks specific Jira history for this task.
+    - <70%: Assigned based on availability and role fallback only.
+2. **justification**: This must be a professional, evidence-based sentence. 
+    - **BAD**: "He knows React."
+    - **GOOD**: "Assigned to {name} because their Jira history shows 3 successful deliveries of similar API integrations, and they currently have the 12h of bandwidth required this week."
+3. **Load Balancing**: If one resource is the "best" for all tasks, you MUST distribute the load. Do not assign more than 40 hours of work to a single 'real_user_id'. Use the next best available match to ensure the project timeline is met.
+    """
+
+    # Internal schemas for structured output
+    class BatchAssignment(BaseModel):
+        task_name: str
+        real_user_id: str
+        match_percentage: int
+        justification: str
+
+    class BatchResponse(BaseModel):
+        assignments: List[BatchAssignment]
+
+    # 4. SINGLE LLM CALL (Eliminates 429 errors)
+    response = await llm.generate_structured(prompt, BatchResponse)
+    
+    # 5. AGGREGATE RESULTS FOR FRONTEND
+    team_roster = {}
+    for asn in response.assignments:
+        temp_id = asn.real_user_id
+        real_info = id_map.get(temp_id)
         
-        assignments = await allocate_resource_for_task(single_req)
+        if not real_info:
+            continue
         
-        for asn in assignments:
-            user_id = asn.real_user_id
+        user_uuid = str(real_info['id'])
+        if user_uuid not in team_roster:
+            team_roster[user_uuid] = {
+                "id": user_uuid,
+                "name": real_info['name'],
+                "role": real_info['role'],
+                "match_percentage": asn.match_percentage,
+                "availability": 100, 
+                "task_fit": [asn.task_name],
+                "justification": asn.justification,
+                "avatar": real_info['name'][:2].upper()
+            }
+        else:
+            # If user is already in roster, add this task to their fit list
+            team_roster[user_uuid]["task_fit"].append(asn.task_name)
+            # Use the higher match percentage or average? Let's take the latest for simplicity
+            team_roster[user_uuid]["match_percentage"] = (team_roster[user_uuid]["match_percentage"] + asn.match_percentage) // 2
             
-            if user_id not in team_roster:
-                team_roster[user_id] = {
-                    "id": user_id,
-                    "name": asn.employee_name,
-                    "role": "Engineer", 
-                    "match_percentage": asn.match_percentage,
-                    "availability": 100, 
-                    "task_fit": [task.task_name],
-                    "justification": asn.justification, # Fixed: was asn.reason
-                    "avatar": asn.employee_name[:2].upper() if asn.employee_name else "AI"
-                }
-            else:
-                team_roster[user_id]["task_fit"].append(task.task_name)
-                
     return list(team_roster.values())
+
 
 async def allocate_resource_for_task(request: AllocationRequest):
     """
-    Assigns the best employee to a single task using the Gemini Matchmaker.
+    Legacy fallback for single task allocation if needed.
     """
     try:
         rpc_response = supabase.rpc('get_project_context', {
@@ -159,34 +252,62 @@ async def allocate_resource_for_task(request: AllocationRequest):
             "role": emp.get('role', 'Unknown Role'),
             "skills": emp.get('skills', []),
             "capacity": emp.get('capacity_hours_per_week', 40),
-            "history": (emp.get('jira_history') or [])[:3],
-            "leave": emp.get('leave_status') or "Available"
+            "history": (emp.get('jira_history') or [])[:3]
         })
 
     prompt = f"""
-    You are a Technical Program Manager. Assign engineering tasks to resources.
-    TASK: {request.task_name} ({request.estimated_hours}h)
-    RESOURCES: {compact_resources}
-    
-    RULES:
-    1. Prioritize Jira History.
-    2. Fallback to Role match if history/skills are missing.
-    3. Tie-break with highest capacity.
-    
-    OUTPUT JSON:
-    {{ "assignments": [ {{ "real_user_id": "E1", "employee_name": "", "match_percentage": 90, "justification": "..." }} ] }}
-    """
+### ROLE
+You are a Senior AI Resource Manager specialized in high-performance engineering team optimization. Your goal is to maximize project success by matching tasks to the most qualified engineers based on empirical data.
+
+### OBJECTIVE
+Analyze the provided TASK and the list of AVAILABLE RESOURCES. Select the single best candidate for the job based on the Hierarchy of Evidence.
+
+### DATA INPUTS
+1. **TASK**: {request.task_name} (Estimated: {request.estimated_hours} hours).
+2. **RESOURCES**: {json.dumps(compact_resources)}
+
+### THE HIERARCHY OF EVIDENCE (Strict Priority)
+1. **Proven Track Record (Jira History):** If a resource has 'Successfully Completed' tasks of a similar nature in their history, they are the primary choice. Past performance is the strongest predictor of success.
+2. **Technical Alignment (Skills):** Match the 'required_skills' of the task against the engineer's 'skills' array.
+3. **Role Proxy:** If history and skills are sparse (common for new hires), evaluate the candidate's 'role' (e.g., a 'Frontend Developer' is a logical fallback for a 'CSS' task even if 'CSS' isn't explicitly listed in their skills).
+4. **Availability & Capacity:** You MUST NOT assign a task if the duration overlaps with the candidate's 'leave_status'. If multiple candidates are equally qualified, the tie-breaker is the highest remaining 'capacity'.
+
+### OUTPUT QUALITY STANDARDS
+You must return a JSON object containing an `assignments` list. Each assignment must meet these descriptive requirements:
+
+1. **match_percentage**: 
+    - **90-100%**: Expert match; has both the exact skills and a proven Jira history of similar tasks.
+    - **70-89%**: Strong match; has the skills or role alignment but lacks specific recorded history for this exact task type.
+    - **Below 70%**: Fallback match; selected based on availability and role-relevance because no better candidate exists.
+
+2. **justification**: Write a professional, data-driven sentence for the Project Manager.
+    - **Format**: "Selected [Name] due to [Evidence]. [Capacity Note]."
+    - **Example**: "Selected E1 due to their proven history with 3 successful React-based API integrations and their high current availability (40h)."
+    - **Note**: Mention if you are using 'Role Fallback' because they are a new hire.
+
+### OUTPUT FORMAT
+Provide only valid JSON following this structure:
+{{
+  "assignments": [
+    {{
+      "real_user_id": "E1",
+      "employee_name": "Leave blank",
+      "match_percentage": 95,
+      "justification": "Descriptive string here"
+    }}
+  ]
+}}
+"""
     
     class AllocationResponseWrapper(BaseModel):
         assignments: List[Assignment]
 
     response = await llm.generate_structured(prompt, AllocationResponseWrapper)
     
-    final_assignments = response.assignments
-    for asn in final_assignments:
+    for asn in response.assignments:
         real_info = id_map.get(asn.real_user_id)
         if real_info:
             asn.real_user_id = str(real_info['id'])
             asn.employee_name = real_info['name']
             
-    return final_assignments
+    return response.assignments
